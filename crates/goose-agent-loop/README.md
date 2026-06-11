@@ -13,6 +13,6 @@ Current ownership:
 - lifecycle event wrapping for run start and completion
 - conversion from Goose conversation messages into loop events
 
-Keep concrete provider creation, concrete tool dispatch, session storage, CLI
-rendering, and product-specific prompt policy out of this crate. The loop crate
+Keep concrete provider creation, concrete tool dispatch, session storage,
+rendering, and runtime-specific prompt policy out of this crate. The loop crate
 coordinates those contracts; the owning runtime supplies their implementations.

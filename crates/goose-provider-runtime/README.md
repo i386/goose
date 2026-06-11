@@ -14,7 +14,7 @@ Current ownership:
 - normalized provider failures, provider errors, and Google error code mapping
 - permission routing metadata used by tool-aware provider calls
 
-Keep concrete agent orchestration, prompt management, session persistence,
-workspace binding, and UI behavior out of this crate. Provider implementations
-can adapt to this surface, but this crate should stay focused on reusable
-provider contracts and dependency-light provider support code.
+Keep concrete agent orchestration, prompt management, session persistence, and
+workspace binding out of this crate. Provider implementations can adapt to this
+surface, but this crate should stay focused on reusable provider contracts and
+dependency-light provider support code.

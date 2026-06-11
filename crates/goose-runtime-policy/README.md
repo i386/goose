@@ -12,6 +12,6 @@ Current ownership:
 - layered host policy rendering
 - helpers for rendering prompt addenda without copying the base Goose prompt
 
-Keep the concrete Goose system prompt, product-specific policy text, CLI mode
+Keep the concrete Goose system prompt, runtime-specific policy text, mode
 selection, and provider behavior out of this crate. This crate defines how a
 host describes policy; the owning runtime decides what policy to apply.
