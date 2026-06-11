@@ -5,6 +5,7 @@ pub mod import_formats;
 mod legacy;
 #[cfg(feature = "nostr")]
 pub mod nostr_share;
+pub mod runtime_contracts;
 pub mod session_manager;
 
 pub use diagnostics::{

@@ -18,6 +18,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use uuid::Uuid;
 
+pub use goose_providers::model_config::{extract_reasoning_effort, is_openai_responses_model};
+
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum ImageFormat {
     OpenAi,
@@ -192,50 +194,6 @@ pub async fn handle_response_google_compat(response: Response) -> Result<Value, 
             Err(ProviderError::RequestFailed(format!("Request failed with status {} at {url}", final_status)))
         }
     }
-}
-
-/// True when the model should use the OpenAI Responses API.
-///
-/// The Responses API is backwards-compatible with all OpenAI reasoning
-/// models, so every `o`-series (`o1`, `o3`, `o4`, …) and `gpt-5` variant
-/// routes here. The matcher intentionally scans the full model identifier so
-/// hosted aliases like `databricks-gpt-5.4`, `goose-o3-mini`, or
-/// `headless-goose-o3-mini` work without provider-specific normalization.
-pub fn is_openai_responses_model(model_name: &str) -> bool {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re =
-        RE.get_or_init(|| Regex::new(r"(?i)(?:^|[-/])(?:o\d+(?:$|-)|gpt-5(?:$|[-.]))").unwrap());
-    re.is_match(model_name)
-}
-
-/// Extract an explicit reasoning-effort suffix from a model name.
-///
-/// Returns `(base_model_name, Some(effort))` when the user appended a
-/// recognised suffix like `-high` or `-xhigh`, e.g. `gpt-5.4-high` →
-/// `("gpt-5.4", Some("high"))`.
-///
-/// When no suffix is present the effort is `None` — callers should omit
-/// the `reasoning` field entirely so the API applies its own per-model
-/// default. This avoids hard-coding a default that may be invalid for
-/// certain models (e.g. `gpt-5-pro` only accepts `high`; older o-series
-/// models reject `none` and `xhigh`).
-pub fn extract_reasoning_effort(model_name: &str) -> (String, Option<String>) {
-    if !is_openai_responses_model(model_name) {
-        return (model_name.to_string(), None);
-    }
-
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"(?i)^(?P<base>.+)-(?P<effort>none|low|medium|high|xhigh)$").unwrap()
-    });
-
-    if let Some(captures) = re.captures(model_name) {
-        let base = captures["base"].to_string();
-        let effort = captures["effort"].to_ascii_lowercase();
-        return (base, Some(effort));
-    }
-
-    (model_name.to_string(), None)
 }
 
 pub fn openai_reasoning_effort_for_thinking(

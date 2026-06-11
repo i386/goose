@@ -1,0 +1,16 @@
+[package]
+name = "goose-runtime-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable prompt and runtime policy contracts for goose"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+

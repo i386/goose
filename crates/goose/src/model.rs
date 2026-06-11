@@ -1,3 +1,8 @@
+use goose_provider_runtime::{
+    apply_provider_model_hints, apply_provider_model_spec, ProviderModelConfigSnapshot,
+    ProviderModelConfigSnapshotSource, ProviderModelConfigTarget, ProviderModelHints,
+    ProviderModelSpec,
+};
 use once_cell::sync::Lazy;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -233,22 +238,22 @@ impl ModelConfig {
                     }
                 });
 
-        if let Some(canonical) = canonical {
-            if self.context_limit.is_none() {
-                self.context_limit = Some(canonical.limit.context);
-            }
-            if self.max_tokens.is_none() {
-                self.max_tokens = canonical
-                    .limit
-                    .output
-                    .filter(|&output| output < canonical.limit.context)
-                    .map(|output| output as i32);
-            }
-            if self.reasoning.is_none() {
-                self.reasoning = canonical.reasoning;
-            }
-        }
+        let hints = canonical.map(|canonical| ProviderModelHints {
+            context_limit: canonical.limit.context,
+            output_limit: canonical.limit.output,
+            reasoning: canonical.reasoning,
+        });
+        apply_provider_model_hints(&mut self, hints.as_ref());
 
+        self
+    }
+
+    pub fn with_provider_model_spec(
+        mut self,
+        spec: &ProviderModelSpec,
+        hints: Option<&ProviderModelHints>,
+    ) -> Self {
+        apply_provider_model_spec(&mut self, spec, hints);
         self
     }
 
@@ -533,6 +538,60 @@ impl ModelConfig {
     }
 }
 
+impl ProviderModelConfigTarget for ModelConfig {
+    fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    fn context_limit(&self) -> Option<usize> {
+        self.context_limit
+    }
+
+    fn max_tokens(&self) -> Option<i32> {
+        self.max_tokens
+    }
+
+    fn reasoning(&self) -> Option<bool> {
+        self.reasoning
+    }
+
+    fn set_context_limit(&mut self, context_limit: Option<usize>) {
+        self.context_limit = context_limit;
+    }
+
+    fn set_max_tokens(&mut self, max_tokens: Option<i32>) {
+        self.max_tokens = max_tokens;
+    }
+
+    fn set_reasoning(&mut self, reasoning: Option<bool>) {
+        self.reasoning = reasoning;
+    }
+}
+
+impl ProviderModelConfigSnapshotSource for ModelConfig {
+    fn to_provider_model_config_snapshot(&self) -> ProviderModelConfigSnapshot {
+        ProviderModelConfigSnapshot {
+            model_name: self.model_name.clone(),
+            context_limit: self.context_limit,
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            toolshim: self.toolshim,
+            toolshim_model: self.toolshim_model.clone(),
+            request_params: self.request_params.as_ref().map(|params| {
+                params
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            }),
+            reasoning: self.reasoning,
+            fast_model: self
+                .fast_model_config
+                .as_ref()
+                .map(|fast_config| Box::new(fast_config.to_provider_model_config_snapshot())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -661,6 +720,51 @@ mod tests {
         assert_eq!(fast_config.context_limit, Some(4096));
         assert_eq!(fast_config.max_tokens, Some(1024));
         assert_eq!(config.use_fast_model().model_name, "fast-model");
+    }
+
+    #[test]
+    fn model_config_exports_provider_runtime_snapshot() {
+        let mut request_params = HashMap::new();
+        request_params.insert("thinking_effort".to_string(), serde_json::json!("low"));
+
+        let config = ModelConfig {
+            model_name: "primary-model".to_string(),
+            context_limit: Some(128_000),
+            temperature: Some(0.2),
+            max_tokens: Some(4096),
+            toolshim: true,
+            toolshim_model: Some("toolshim-model".to_string()),
+            fast_model_config: Some(Box::new(ModelConfig {
+                model_name: "fast-model".to_string(),
+                max_tokens: Some(1024),
+                ..Default::default()
+            })),
+            request_params: Some(request_params),
+            reasoning: Some(true),
+        };
+
+        let snapshot = config.to_provider_model_config_snapshot();
+
+        assert_eq!(snapshot.model_name, "primary-model");
+        assert_eq!(snapshot.context_limit, Some(128_000));
+        assert_eq!(snapshot.temperature, Some(0.2));
+        assert_eq!(snapshot.max_tokens, Some(4096));
+        assert!(snapshot.toolshim);
+        assert_eq!(snapshot.toolshim_model.as_deref(), Some("toolshim-model"));
+        assert_eq!(snapshot.reasoning, Some(true));
+        assert_eq!(
+            snapshot
+                .request_params
+                .as_ref()
+                .unwrap()
+                .get("thinking_effort"),
+            Some(&serde_json::json!("low"))
+        );
+        assert_eq!(
+            snapshot.fast_model.as_ref().unwrap().model_name,
+            "fast-model"
+        );
+        assert_eq!(snapshot.model_spec("openai").max_tokens, Some(4096));
     }
 
     mod thinking_effort_tests {
@@ -906,6 +1010,27 @@ mod tests {
             let config = config.with_canonical_limits("openai");
 
             assert_eq!(config.max_tokens, Some(1_000));
+        }
+
+        #[test]
+        fn provider_model_spec_overrides_max_tokens_without_erasing_hints() {
+            let _guard = env_lock::lock_env([
+                ("GOOSE_MAX_TOKENS", None::<&str>),
+                ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ]);
+            let spec = ProviderModelSpec {
+                provider_name: "openai".to_string(),
+                model_name: "gpt-4o".to_string(),
+                max_tokens: Some(2_048),
+            };
+
+            let config = ModelConfig::new_or_fail("gpt-4o")
+                .with_canonical_limits("openai")
+                .with_provider_model_spec(&spec, None);
+
+            assert_eq!(config.context_limit, Some(128_000));
+            assert_eq!(config.max_tokens, Some(2_048));
+            assert_eq!(config.reasoning, Some(false));
         }
 
         #[test]

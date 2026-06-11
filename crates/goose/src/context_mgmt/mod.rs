@@ -319,10 +319,15 @@ async fn do_compact(
             Ok((mut response, mut provider_usage)) => {
                 response.role = Role::User;
 
-                provider_usage
-                    .ensure_tokens(&system_prompt, &summarization_request, &response, &[])
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to ensure usage tokens: {}", e))?;
+                crate::providers::usage_estimator::ensure_usage_tokens(
+                    &mut provider_usage,
+                    &system_prompt,
+                    &summarization_request,
+                    &response,
+                    &[],
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to ensure usage tokens: {}", e))?;
 
                 return Ok((response, provider_usage));
             }

@@ -215,6 +215,12 @@ icu_calendar = { version = "=2.1.1", default-features = false }
 icu_locale = { version = "=2.1.1", default-features = false }
 llama-cpp-sys-2 = { workspace = true, optional = true }
 image = { version = "0.24.9", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+goose-agent-core = { version = "1.37.0", path = "../goose-agent-core" }
+goose-agent-loop = { version = "1.37.0", path = "../goose-agent-loop" }
+goose-provider-runtime = { version = "1.37.0", path = "../goose-provider-runtime" }
+goose-runtime-policy = { version = "1.37.0", path = "../goose-runtime-policy" }
+goose-tool-runtime = { version = "1.37.0", path = "../goose-tool-runtime" }
+goose-session-runtime = { version = "1.37.0", path = "../goose-session-runtime" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { workspace = true }

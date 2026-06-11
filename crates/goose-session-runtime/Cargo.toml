@@ -1,0 +1,21 @@
+[package]
+name = "goose-session-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable session persistence contracts for goose"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+goose-providers = { version = "1.37.0", path = "../goose-providers" }
+rmcp.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+uuid = { workspace = true, features = ["serde"] }

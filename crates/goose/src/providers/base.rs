@@ -1,7 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 /// Default HTTP timeout for all provider API calls.
@@ -15,19 +14,21 @@ use super::inventory::{default_inventory_identity, InventoryIdentityInput};
 use super::retry::RetryConfig;
 use crate::config::base::ConfigValue;
 use crate::config::{Config, ExtensionConfig, GooseMode};
-use crate::conversation::message::{Message, MessageContent};
+use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::permission::PermissionConfirmation;
 use crate::utils::safe_truncate;
+pub use goose_provider_runtime::{
+    collect_stream, stream_from_single_message, MessageStream, PermissionRouting, ProviderUsage,
+    Usage,
+};
 use rmcp::model::Tool;
 use utoipa::ToSchema;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use std::ops::{Add, AddAssign};
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
@@ -672,129 +673,6 @@ impl ConfigKey {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderUsage {
-    pub model: String,
-    pub usage: Usage,
-}
-
-impl ProviderUsage {
-    pub fn new(model: String, usage: Usage) -> Self {
-        Self { model, usage }
-    }
-
-    /// Ensures this ProviderUsage has token counts, estimating them if necessary
-    pub async fn ensure_tokens(
-        &mut self,
-        system_prompt: &str,
-        request_messages: &[Message],
-        response: &Message,
-        tools: &[Tool],
-    ) -> Result<(), ProviderError> {
-        crate::providers::usage_estimator::ensure_usage_tokens(
-            self,
-            system_prompt,
-            request_messages,
-            response,
-            tools,
-        )
-        .await
-        .map_err(|e| ProviderError::ExecutionError(format!("Failed to ensure usage tokens: {}", e)))
-    }
-
-    /// Combine this ProviderUsage with another, adding their token counts
-    /// Uses the model from this ProviderUsage
-    pub fn combine_with(&self, other: &ProviderUsage) -> ProviderUsage {
-        ProviderUsage {
-            model: self.model.clone(),
-            usage: self.usage + other.usage,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, Copy)]
-pub struct Usage {
-    pub input_tokens: Option<i32>,
-    pub output_tokens: Option<i32>,
-    pub total_tokens: Option<i32>,
-    pub cache_read_input_tokens: Option<i32>,
-    pub cache_write_input_tokens: Option<i32>,
-}
-
-fn sum_optionals<T>(a: Option<T>, b: Option<T>) -> Option<T>
-where
-    T: Add<Output = T> + Default,
-{
-    match (a, b) {
-        (Some(x), Some(y)) => Some(x + y),
-        (Some(x), None) => Some(x + T::default()),
-        (None, Some(y)) => Some(T::default() + y),
-        (None, None) => None,
-    }
-}
-
-impl Add for Usage {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self::new(
-            sum_optionals(self.input_tokens, other.input_tokens),
-            sum_optionals(self.output_tokens, other.output_tokens),
-            sum_optionals(self.total_tokens, other.total_tokens),
-        )
-        .with_cache_tokens(
-            sum_optionals(self.cache_read_input_tokens, other.cache_read_input_tokens),
-            sum_optionals(
-                self.cache_write_input_tokens,
-                other.cache_write_input_tokens,
-            ),
-        )
-    }
-}
-
-impl AddAssign for Usage {
-    fn add_assign(&mut self, rhs: Self) {
-        *self = *self + rhs;
-    }
-}
-
-impl Usage {
-    pub fn new(
-        input_tokens: Option<i32>,
-        output_tokens: Option<i32>,
-        total_tokens: Option<i32>,
-    ) -> Self {
-        let calculated_total = if total_tokens.is_none() {
-            match (input_tokens, output_tokens) {
-                (Some(input), Some(output)) => Some(input + output),
-                (Some(input), None) => Some(input),
-                (None, Some(output)) => Some(output),
-                (None, None) => None,
-            }
-        } else {
-            total_tokens
-        };
-
-        Self {
-            input_tokens,
-            output_tokens,
-            total_tokens: calculated_total,
-            cache_read_input_tokens: None,
-            cache_write_input_tokens: None,
-        }
-    }
-
-    pub fn with_cache_tokens(
-        mut self,
-        cache_read_input_tokens: Option<i32>,
-        cache_write_input_tokens: Option<i32>,
-    ) -> Self {
-        self.cache_read_input_tokens = cache_read_input_tokens;
-        self.cache_write_input_tokens = cache_write_input_tokens;
-        self
-    }
-}
-
 pub(crate) fn current_working_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
@@ -853,12 +731,6 @@ pub trait ProviderDef: Send + Sync {
         let metadata = Self::metadata();
         super::inventory::default_inventory_configured(&metadata.config_keys, Config::global())
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PermissionRouting {
-    ActionRequired,
-    Noop,
 }
 
 /// Base trait for AI providers (OpenAI, Anthropic, etc)
@@ -1207,73 +1079,11 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// A message stream yields partial text content but complete tool calls, all within the Message object
-/// So a message with text will contain potentially just a word of a longer response, but tool calls
-/// messages will only be yielded once concatenated.
-pub type MessageStream = Pin<
-    Box<dyn Stream<Item = Result<(Option<Message>, Option<ProviderUsage>), ProviderError>> + Send>,
->;
-
-pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> MessageStream {
-    let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
-    Box::pin(stream)
-}
-
-/// Collect all chunks from a MessageStream into a single Message and ProviderUsage
-pub async fn collect_stream(
-    mut stream: MessageStream,
-) -> Result<(Message, ProviderUsage), ProviderError> {
-    use futures::StreamExt;
-
-    let mut final_message: Option<Message> = None;
-    let mut final_usage: Option<ProviderUsage> = None;
-
-    while let Some(result) = stream.next().await {
-        let (msg_opt, usage_opt) = result?;
-
-        if let Some(msg) = msg_opt {
-            final_message = Some(match final_message {
-                Some(mut prev) => {
-                    for new_content in msg.content {
-                        match (&mut prev.content.last_mut(), &new_content) {
-                            // Coalesce consecutive text blocks
-                            (
-                                Some(MessageContent::Text(last_text)),
-                                MessageContent::Text(new_text),
-                            ) => {
-                                last_text.text.push_str(&new_text.text);
-                            }
-                            _ => {
-                                prev.content.push(new_content);
-                            }
-                        }
-                    }
-                    prev
-                }
-                None => msg,
-            });
-        }
-
-        if let Some(usage) = usage_opt {
-            final_usage = Some(usage);
-        }
-    }
-
-    match final_message {
-        Some(msg) => {
-            let usage = final_usage
-                .unwrap_or_else(|| ProviderUsage::new("unknown".to_string(), Usage::default()));
-            Ok((msg, usage))
-        }
-        None => Err(ProviderError::ExecutionError(
-            "Stream yielded no message".to_string(),
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::message::MessageContent;
+    use futures::Stream;
     use std::collections::HashMap;
     use test_case::test_case;
 

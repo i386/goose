@@ -1,0 +1,30 @@
+[package]
+name = "goose-agent-loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable agent loop contracts for goose"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+goose-provider-runtime = { version = "1.37.0", path = "../goose-provider-runtime" }
+goose-providers = { version = "1.37.0", path = "../goose-providers" }
+goose-runtime-policy = { version = "1.37.0", path = "../goose-runtime-policy" }
+goose-tool-runtime = { version = "1.37.0", path = "../goose-tool-runtime" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio-util.workspace = true
+
+[dev-dependencies]
+rmcp.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+

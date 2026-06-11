@@ -1,0 +1,19 @@
+[package]
+name = "goose-agent-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable agent runtime contracts for goose"
+
+[lints]
+workspace = true
+
+[dependencies]
+goose-agent-loop = { version = "1.37.0", path = "../goose-agent-loop" }
+goose-provider-runtime = { version = "1.37.0", path = "../goose-provider-runtime" }
+goose-runtime-policy = { version = "1.37.0", path = "../goose-runtime-policy" }
+goose-session-runtime = { version = "1.37.0", path = "../goose-session-runtime" }
+goose-tool-runtime = { version = "1.37.0", path = "../goose-tool-runtime" }

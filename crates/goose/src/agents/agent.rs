@@ -7,6 +7,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use goose_agent_loop::{
+    AgentLoopControl, AgentLoopControlDecision, AgentLoopTurnLimit, DEFAULT_AGENT_LOOP_MAX_TURNS,
+};
 use tracing_futures::Instrument;
 use uuid::Uuid;
 
@@ -64,7 +67,6 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-const DEFAULT_MAX_TURNS: u32 = 1000;
 const DEFAULT_STOP_HOOK_BLOCK_CAP: u32 = 8;
 const COMPACTION_THINKING_TEXT: &str = "goose is compacting the conversation...";
 const DEFAULT_FRONTEND_INSTRUCTIONS: &str = "The following tools are provided directly by the frontend and will be executed by the frontend when called.";
@@ -1688,12 +1690,12 @@ impl Agent {
         let working_dir = session.working_dir.clone();
         let reply_stream_span = tracing::info_span!(target: "goose::agents::agent", "reply_stream", trace_output = tracing::field::Empty, session.id = %session_config.id);
         let inner = Box::pin(async_stream::try_stream! {
-            let mut turns_taken = 0u32;
-            let max_turns = session_config.max_turns.unwrap_or_else(|| {
-                Config::global()
-                    .get_param::<u32>("GOOSE_MAX_TURNS")
-                    .unwrap_or(DEFAULT_MAX_TURNS)
-            });
+            let configured_max_turns = Config::global().get_param::<u32>("GOOSE_MAX_TURNS").ok();
+            let max_turns = AgentLoopTurnLimit::new(session_config.max_turns)
+                .with_configured_max_turns(configured_max_turns)
+                .with_default_max_turns(DEFAULT_AGENT_LOOP_MAX_TURNS)
+                .resolve();
+            let mut loop_control = AgentLoopControl::new(max_turns, cancel_token.clone());
             let mut compaction_attempts = 0;
             let mut last_assistant_text = String::new();
             let mut goal_check_pending = false;
@@ -1704,7 +1706,7 @@ impl Agent {
             let stop_hook_block_cap = self.stop_hook_block_cap();
 
             loop {
-                if is_token_cancelled(&cancel_token) {
+                if loop_control.is_cancelled() {
                     break;
                 }
 
@@ -1750,18 +1752,19 @@ impl Agent {
                     }
                 }
 
-                if retrying_after_stop_hook_denial {
-                    retrying_after_stop_hook_denial = false;
-                } else {
-                    turns_taken += 1;
-                }
-                if turns_taken > max_turns {
-                    yield AgentEvent::Message(
-                        Message::assistant().with_text(
-                            "I've reached the maximum number of actions I can do without user input. Would you like me to continue?"
-                        )
-                    );
-                    break;
+                let count_turn = !retrying_after_stop_hook_denial;
+                retrying_after_stop_hook_denial = false;
+                match loop_control.begin_turn(count_turn) {
+                    AgentLoopControlDecision::Continue => {}
+                    AgentLoopControlDecision::Cancelled => break,
+                    AgentLoopControlDecision::MaxTurnsReached => {
+                        yield AgentEvent::Message(
+                            Message::assistant().with_text(
+                                "I've reached the maximum number of actions I can do without user input. Would you like me to continue?"
+                            )
+                        );
+                        break;
+                    }
                 }
 
                 let conversation_with_moim = super::moim::inject_moim(

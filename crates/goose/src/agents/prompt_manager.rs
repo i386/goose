@@ -1,6 +1,9 @@
 #[cfg(test)]
 use chrono::DateTime;
 use chrono::Utc;
+use goose_runtime_policy::{PromptAssembly, PromptPolicyTarget, PromptSection};
+#[cfg(test)]
+use goose_runtime_policy::{PromptPolicy, PromptPolicyApplier, PromptPolicyLayer};
 use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::Value;
@@ -182,16 +185,14 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         if system_prompt_extras.is_empty() {
             base_prompt
         } else {
-            let sanitized_system_prompt_extras: Vec<String> = system_prompt_extras
-                .into_values()
-                .map(|extra| sanitize_unicode_tags(&extra))
+            let sections: Vec<PromptSection> = system_prompt_extras
+                .into_iter()
+                .map(|(key, extra)| PromptSection::new(key, sanitize_unicode_tags(&extra)))
                 .collect();
 
-            format!(
-                "{}\n\n# Additional Instructions:\n\n{}",
-                base_prompt,
-                sanitized_system_prompt_extras.join("\n\n")
-            )
+            PromptAssembly::new(base_prompt)
+                .with_sections(sections)
+                .render()
         }
     }
 }
@@ -276,6 +277,16 @@ impl PromptManager {
     }
 }
 
+impl PromptPolicyTarget for PromptManager {
+    fn set_system_prompt_override_from_policy(&mut self, template: String) {
+        self.set_system_prompt_override(template);
+    }
+
+    fn add_system_prompt_extra_from_policy(&mut self, key: String, instruction: String) {
+        self.add_system_prompt_extra(key, instruction);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use insta::assert_snapshot;
@@ -345,6 +356,38 @@ mod tests {
 
         assert!(!result.contains("Agent instruction"));
         assert!(result.contains("Project instruction"));
+    }
+
+    #[test]
+    fn applies_prompt_policy_without_replacing_goose_prompt() {
+        let mut manager = PromptManager::new();
+        let policy =
+            PromptPolicy::chat().with_extra("product_policy", "Prefer collaborative wording.");
+
+        manager.apply_prompt_policy(&policy);
+        let result = manager.builder().build();
+
+        assert!(result.contains("# Additional Instructions:"));
+        assert!(result.contains("Prefer collaborative wording."));
+    }
+
+    #[test]
+    fn applies_layered_runtime_policy_without_copying_goose_prompt() {
+        let mut manager = PromptManager::new();
+        let policy = PromptPolicy::chat().with_layer(
+            PromptPolicyLayer::new("host_policy")
+                .with_title("Host Policy")
+                .with_instruction("Respect shared workspace permissions.")
+                .with_instruction("Mention collaborators by their visible names."),
+        );
+
+        manager.apply_prompt_policy(&policy);
+        let result = manager.builder().build();
+
+        assert!(result.contains("You are a general-purpose AI agent called goose"));
+        assert!(result.contains("## Host Policy"));
+        assert!(result.contains("Respect shared workspace permissions."));
+        assert!(result.contains("Mention collaborators by their visible names."));
     }
 
     #[test]
