@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PromptPolicy {
     pub system_prompt_extras: Vec<SystemPromptExtra>,
     pub system_prompt_override: Option<String>,
