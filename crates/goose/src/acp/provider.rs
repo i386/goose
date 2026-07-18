@@ -738,9 +738,31 @@ impl AcpClientLoop {
         }
         let transport =
             agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
-        let result = self.run(transport, rx, init_tx).await;
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+        let prompt_response_tx = self.prompt_response_tx.clone();
+        let protocol = self.run(transport, rx, init_tx);
+        tokio::pin!(protocol);
+
+        let result = tokio::select! {
+            biased;
+            status = child.wait() => {
+                let status = status.context("failed to wait for ACP process")?;
+                Err(anyhow::anyhow!("ACP process exited unexpectedly with {status}"))
+            }
+            result = &mut protocol => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                result
+            }
+        };
+        if let Err(error) = &result {
+            let active_prompt = prompt_response_tx
+                .lock()
+                .ok()
+                .and_then(|sender| sender.as_ref().cloned());
+            if let Some(sender) = active_prompt {
+                let _ = sender.try_send(AcpUpdate::Error(error.to_string()));
+            }
+        }
         result
     }
 
@@ -1863,6 +1885,51 @@ mod tests {
             mode_mapping,
             notification_callback: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_acp_child_is_reaped_and_fails_the_active_prompt() {
+        let client_loop = AcpClientLoop::new(
+            test_acp_config(HashMap::new(), None),
+            Arc::new(Mutex::new(GooseMode::Auto)),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(AtomicU64::new(0)),
+        );
+        let (prompt_tx, mut prompt_rx) = mpsc::channel(1);
+        *client_loop.prompt_response_tx.lock().unwrap() = Some(prompt_tx);
+
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 0.05; exit 23"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = command.spawn().unwrap();
+        let child_id = child.id().unwrap();
+        let (_request_tx, mut request_rx) = mpsc::channel(1);
+        let (init_tx, _init_rx) = oneshot::channel();
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client_loop.run_with_child(child, &mut request_rx, init_tx),
+        )
+        .await
+        .expect("ACP loop should stop when its child exits")
+        .unwrap_err();
+
+        assert!(error.to_string().contains("exit status: 23"));
+        assert!(matches!(
+            prompt_rx.recv().await,
+            Some(AcpUpdate::Error(message)) if message.contains("exit status: 23")
+        ));
+
+        let process_status = Command::new("ps")
+            .args(["-p", &child_id.to_string()])
+            .status()
+            .await
+            .unwrap();
+        assert!(!process_status.success(), "ACP child was not reaped");
     }
 
     #[test_case(GooseMode::Auto)]
